@@ -1,0 +1,13 @@
+{
+  "identities": [
+    {
+      "authorized_keys": ["..."],
+      "rules": [
+        {
+          "hosts": ["github.com"],
+          "ports": [22]
+        }
+      ]
+    }
+  ]
+}

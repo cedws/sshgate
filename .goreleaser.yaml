@@ -1,0 +1,47 @@
+version: 2
+
+builds:
+  - ldflags: "-s -w"
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+dockers:
+  - build_flag_templates:
+      - "--platform=linux/arm64,linux/amd64"
+    image_templates:
+      - ghcr.io/cedws/sshgate:latest
+      - ghcr.io/cedws/sshgate:{{ .Tag }}
+
+scoops:
+  - name: sshgate
+    repository:
+      name: scoop-bucket
+      owner: cedws
+      token: "{{ .Env.SCOOP_BUCKET_PUSH_TOKEN }}"
+
+homebrew_casks:
+  - name: sshgate
+    repository:
+      name: homebrew-tap
+      owner: cedws
+      token: "{{ .Env.HOMEBREW_TAP_PUSH_TOKEN }}"
+    custom_block: |
+      binary "sshgate", target: "age-plugin-sshgate"
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sshgate"]
+          end
+
+changelog:
+  use: github-native
