@@ -9,8 +9,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -89,6 +92,7 @@ func (d *directTCPIPExtraData) UnmarshalBinary(b []byte) error {
 type Server struct {
 	config     *Config
 	listenAddr string
+	conns      atomic.Int32
 }
 
 func New(config *Config, listenAddr string) *Server {
@@ -125,6 +129,17 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	defer listener.Close()
 
 	slog.Info("listening", "addr", s.listenAddr)
+
+	go func() {
+		for {
+			select {
+			case <-time.After(time.Second * 30):
+				slog.Info("server status", "conns", s.conns.Load(), "goroutines", runtime.NumGoroutine())
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	for {
 		select {
@@ -190,6 +205,9 @@ func (s *Server) handleConnection(ctx context.Context, c net.Conn, config *ssh.S
 	)
 
 	logger.Info("new connection")
+
+	s.conns.Add(1)
+	defer s.conns.Add(-1)
 
 	go func() {
 		for req := range requests {
@@ -272,14 +290,14 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, logger *slog.Logger, ssh
 		return rejectionError{ssh.Prohibited, "remote connection rejected"}
 	}
 
+	remoteAddr := net.JoinHostPort(destHost, strconv.Itoa(destPort))
+
 	// Remote connection allowed
-	return s.dialRemote(ctx, logger, newChannel, destHost, destPort)
+	return s.dialRemote(ctx, logger, newChannel, remoteAddr)
 }
 
-func (s *Server) dialRemote(ctx context.Context, logger *slog.Logger, newChannel ssh.NewChannel, destHost string, destPort int) error {
+func (s *Server) dialRemote(ctx context.Context, logger *slog.Logger, newChannel ssh.NewChannel, remoteAddr string) error {
 	logger.Info("dialing remote")
-
-	remoteAddr := net.JoinHostPort(destHost, strconv.Itoa(destPort))
 
 	dialer := net.Dialer{}
 	remoteConn, err := dialer.DialContext(ctx, "tcp", remoteAddr)
