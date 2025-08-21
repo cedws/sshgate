@@ -34,8 +34,6 @@ homebrew_casks:
       name: homebrew-tap
       owner: cedws
       token: "{{ .Env.HOMEBREW_TAP_PUSH_TOKEN }}"
-    custom_block: |
-      binary "sshgate", target: "age-plugin-sshgate"
     hooks:
       post:
         install: |
