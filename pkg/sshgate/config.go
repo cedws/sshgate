@@ -77,9 +77,9 @@ func parseHostKeys() ([]ssh.Signer, error) {
 	var signers []ssh.Signer
 
 	for _, envVar := range []string{
-		"SSHPROXY_HOST_KEY_PATH_RSA",
-		"SSHPROXY_HOST_KEY_PATH_ED25519",
-		"SSHPROXY_HOST_KEY_PATH_ECDSA",
+		"SSHGATE_HOST_KEY_PATH_RSA",
+		"SSHGATE_HOST_KEY_PATH_ED25519",
+		"SSHGATE_HOST_KEY_PATH_ECDSA",
 	} {
 		keyPath := os.Getenv(envVar)
 		if keyPath == "" {
