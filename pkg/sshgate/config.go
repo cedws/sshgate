@@ -48,7 +48,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func Open(path string) (*Config, error) {
+func ReadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
