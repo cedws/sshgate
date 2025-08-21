@@ -11,5 +11,7 @@ require (
 require (
 	github.com/alecthomas/repr v0.4.0 // indirect
 	github.com/hexops/gotextdiff v1.0.3 // indirect
+	github.com/swaggest/jsonschema-go v0.3.78 // indirect
+	github.com/swaggest/refl v1.4.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
 )
