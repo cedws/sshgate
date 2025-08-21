@@ -343,7 +343,7 @@ func (s *Server) connAllowed(logger *slog.Logger, fingerprint, destHost string, 
 
 	destHostSpec, err := tryParseHostSpec(destHost)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 
 	for _, ruleset := range rulesets {
