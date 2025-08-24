@@ -4,6 +4,27 @@ sshgate is a proxy SSH server/firewall built to run at a network boundary. It ta
 
 I made this for my experimental [devenv](https://github.com/cedws/devenv) project in which I'm building a locked down development environment with restricted outbound traffic. sshgate facilitates my goal of only allowing outbound SSH traffic to `github.com:22`.
 
+## Installation
+
+### Brew
+
+```bash
+brew install cedws/tap/sshgate
+```
+
+### Scoop
+
+```powershell
+scoop bucket add cedws https://github.com/cedws/scoop-bucket.git
+scoop install sshgate
+```
+
+### Docker
+
+```bash
+docker pull ghcr.io/cedws/sshgate:latest
+```
+
 ## Usage
 
 sshgate is an SSH server that only handles `direct-tcpip` channels, meaning it will only opaquely forward traffic from a remote host if there's a rule for the connected identity allowing it. It doesn't grant a PTY.
