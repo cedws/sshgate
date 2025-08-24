@@ -303,7 +303,7 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, logger *slog.Logger, ssh
 			)
 		}
 
-		return rejectionError{ssh.Prohibited, "remote connection rejected"}
+		return rejectionError{ssh.Prohibited, "remote connection denied"}
 	}
 
 	remoteAddr := net.JoinHostPort(destHost, strconv.Itoa(destPort))
@@ -369,7 +369,7 @@ func (s *Server) connAllowed(logger *slog.Logger, fingerprint, destHost string, 
 		}
 	}
 
-	logger.Info("remote connection rejected because no rulesets permitted it")
+	logger.Info("remote connection denied because no rulesets permitted it")
 
 	return false, nil
 }

@@ -24,7 +24,7 @@ The example config contains a rule allowing the client to jump to `github:22`. I
 
 ```
 $ ssh -J localhost:2222 bitbucket.org
-channel 0: open failed: administratively prohibited: remote connection rejected
+channel 0: open failed: administratively prohibited: remote connection denied
 stdio forwarding failed
 Connection closed by UNKNOWN port 65535
 ```
