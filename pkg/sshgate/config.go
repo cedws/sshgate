@@ -1,8 +1,6 @@
 package sshgate
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,8 +18,15 @@ type RawRule struct {
 	Ports []int    `json:"ports,omitempty"`
 }
 
+type HostKeyPaths struct {
+	ECDSA   string `json:"ecdsa,omitempty"`
+	ED25519 string `json:"ed25519,omitempty"`
+	RSA     string `json:"rsa,omitempty"`
+}
+
 type Config struct {
-	Identities []Identity `json:"identities,omitempty"`
+	Identities   []Identity   `json:"identities,omitempty"`
+	HostKeyPaths HostKeyPaths `json:"host_key_paths"`
 
 	signers          []ssh.Signer
 	identityRulesets map[string][]*Ruleset
@@ -63,7 +68,7 @@ func ReadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
-	config.signers, err = parseHostKeys()
+	config.signers, err = parseHostKeys(config.HostKeyPaths)
 	if err != nil {
 		return nil, fmt.Errorf("invalid host keys: %w", err)
 	}
@@ -73,47 +78,37 @@ func ReadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-func parseHostKeys() ([]ssh.Signer, error) {
+func parseHostKeys(hostKeyPaths HostKeyPaths) ([]ssh.Signer, error) {
 	var signers []ssh.Signer
 
-	for _, envVar := range []string{
-		"SSHGATE_HOST_KEY_PATH_RSA",
-		"SSHGATE_HOST_KEY_PATH_ED25519",
-		"SSHGATE_HOST_KEY_PATH_ECDSA",
+	for keyType, keyPath := range map[string]string{
+		"ssh-ecdsa":   hostKeyPaths.ECDSA,
+		"ssh-ed25519": hostKeyPaths.ED25519,
+		"ssh-rsa":     hostKeyPaths.RSA,
 	} {
-		keyPath := os.Getenv(envVar)
 		if keyPath == "" {
 			continue
 		}
 
 		key, err := os.ReadFile(keyPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read host key %s: %w", envVar, err)
+			return nil, fmt.Errorf("failed to read host key %s: %w", keyPath, err)
 		}
 
 		signer, err := ssh.ParsePrivateKey([]byte(key))
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse host key %s: %w", envVar, err)
+			return nil, fmt.Errorf("failed to parse host key %s: %w", keyPath, err)
+		}
+
+		// Don't allow key of unexpected type to be smuggled in
+		if signer.PublicKey().Type() != keyType {
+			return nil, fmt.Errorf("expected key of type %s but got %s", keyType, signer.PublicKey().Type())
 		}
 
 		signers = append(signers, signer)
 	}
 
 	return signers, nil
-}
-
-func generateSigner() (ssh.Signer, error) {
-	_, privKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate Ed25519 key: %w", err)
-	}
-
-	signer, err := ssh.NewSignerFromSigner(privKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create signer: %w", err)
-	}
-
-	return signer, nil
 }
 
 func parseIdentities(identities []Identity) map[string][]*Ruleset {

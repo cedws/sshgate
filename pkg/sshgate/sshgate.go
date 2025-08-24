@@ -3,6 +3,8 @@ package sshgate
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -49,6 +51,20 @@ func readUint32(r *bytes.Reader) (uint32, error) {
 		return 0, err
 	}
 	return v, nil
+}
+
+func generateSigner() (ssh.Signer, error) {
+	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate Ed25519 key: %w", err)
+	}
+
+	signer, err := ssh.NewSignerFromSigner(privKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create signer: %w", err)
+	}
+
+	return signer, nil
 }
 
 type directTCPIPExtraData struct {
@@ -107,7 +123,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		PublicKeyCallback: s.pubkeyCallback,
 	}
 
-	var signers []ssh.Signer
+	signers := make([]ssh.Signer, len(s.config.signers))
 	if copy(signers, s.config.signers) == 0 {
 		slog.Warn("no host keys provided in config, generating ephemeral ed25519 host key")
 

@@ -31,17 +31,20 @@ Connection closed by UNKNOWN port 65535
 
 sshgate doesn't care about the username used for the jump hop. It doesn't care about the usernames in subsequent hops either; that information is opaque, it simply forwards the traffic to the client.
 
-Since we didn't pass any SSH host keys to sshgate earlier, it generated an ephemeral ED25519 host key on startup. For the server to have a persistent identity, generate an SSH keypair and set `SSHGATE_HOST_KEY_PATH_*` to the path of the private key.
+Since we didn't pass any SSH host keys to sshgate earlier, it generated an ephemeral ED25519 host key on startup. For the server to have a persistent identity, generate an SSH keypair and set `host_key_paths` in the config file accordingly. You may set an ED25519, ECDSA, and RSA host key.
 
 For example, to set the server's ED25519 identity:
 
 ```
 ssh-keygen -t ed25519 -f sshgate
-export SSHGATE_HOST_KEY_PATH_ED25519=./sshgate
 ```
 
-You can also set an RSA and ECDSA identity if you wish.
+Add to the config:
 
-- `SSHGATE_HOST_KEY_PATH_RSA`
-- `SSHGATE_HOST_KEY_PATH_ED25519`
-- `SSHGATE_HOST_KEY_PATH_ECDSA`
+```json
+{
+  "host_key_paths": {
+    "ed25519": "./sshgate"
+  }
+}
+```
