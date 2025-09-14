@@ -107,16 +107,37 @@ func (d *directTCPIPExtraData) UnmarshalBinary(b []byte) error {
 	return nil
 }
 
+type Options struct {
+	Ruleless bool
+}
+
+type Option func(*Options)
+
+func WithRulelessMode() Option {
+	return func(o *Options) {
+		o.Ruleless = true
+	}
+}
+
 type Server struct {
 	config     *Config
 	listenAddr string
-	conns      atomic.Int32
+	options    Options
+
+	conns atomic.Int32
 }
 
-func New(config *Config, listenAddr string) *Server {
+func New(config *Config, listenAddr string, opts ...Option) *Server {
+	var options Options
+
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	return &Server{
 		config:     config,
 		listenAddr: listenAddr,
+		options:    options,
 	}
 }
 
@@ -126,6 +147,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	for _, signer := range s.config.signers {
 		sshConfig.AddHostKey(signer)
+	}
+
+	if s.options.Ruleless {
+		slog.Warn("running in ruleless mode")
 	}
 
 	errgroup, ctx := errgroup.WithContext(ctx)
@@ -383,6 +408,10 @@ func (s *Server) forwardConns(sshConn, remoteConn io.ReadWriteCloser) {
 }
 
 func (s *Server) connAllowed(logger *slog.Logger, fingerprint, destHost string, destPort int) (bool, error) {
+	if s.options.Ruleless {
+		return true, nil
+	}
+
 	rulesets, ok := s.config.identityRulesets[fingerprint]
 	if !ok {
 		panic("allowed previous connection but no rulesets")

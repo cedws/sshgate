@@ -11,6 +11,7 @@ import (
 
 type cli struct {
 	ListenAddr string `help:"Address to listen on" default:":2222"`
+	Ruleless   bool   `help:"Run in ruleless mode"`
 	LogFormat  string `help:"Log format"`
 	Config     string `help:"Path to JSON config file"`
 
@@ -34,12 +35,18 @@ func (s *serveCmd) Run(c *cli) error {
 
 	slog.SetDefault(slog.New(handler))
 
+	var opts []sshgate.Option
+
+	if c.Ruleless {
+		opts = append(opts, sshgate.WithRulelessMode())
+	}
+
 	config, err := sshgate.ReadConfig(c.Config)
 	if err != nil {
 		return err
 	}
 
-	server := sshgate.New(config, c.ListenAddr)
+	server := sshgate.New(config, c.ListenAddr, opts...)
 	return server.ListenAndServe(context.Background())
 }
 
