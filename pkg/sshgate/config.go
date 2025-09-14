@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultTsnetHostname = "sshgate"
-	defaultTsnetPort     = 36867
+	defaultTsnetPort     = 22
 )
 
 type Identity struct {
