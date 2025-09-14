@@ -52,6 +52,14 @@ Connection closed by UNKNOWN port 65535
 
 sshgate doesn't care about the username used for the jump hop. It doesn't care about the usernames in subsequent hops either; that information is opaque, it simply forwards the traffic to the client.
 
+### Rules
+
+The default policy is to block all connections. The `rules` array describes what hosts and ports to allow forwarding to. If you just want to use sshgate for a bastion without firewalling you can run it with `--ruleless`, which disables firewall rules.
+
+If no ports are specified in a rule, port 22 is allowed by default.
+
+### Identity
+
 Since we didn't pass any SSH host keys to sshgate earlier, it generated an ephemeral ED25519 host key on startup. For the server to have a persistent identity, generate an SSH keypair and set `host_key_paths` in the config file accordingly. You may set an ED25519, ECDSA, and RSA host key.
 
 For example, to set the server's ED25519 identity:
