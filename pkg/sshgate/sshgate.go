@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sync/errgroup"
+	"tailscale.com/tsnet"
 )
 
 const fingerprintKey = "fingerprint"
@@ -122,22 +124,41 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	sshConfig := &ssh.ServerConfig{
 		PublicKeyCallback: s.pubkeyCallback,
 	}
-
-	signers := make([]ssh.Signer, len(s.config.signers))
-	if copy(signers, s.config.signers) == 0 {
-		slog.Warn("no host keys provided in config, generating ephemeral ed25519 host key")
-
-		signer, err := generateSigner()
-		if err != nil {
-			return err
-		}
-
-		signers = append(signers, signer)
-	}
-	for _, signer := range signers {
+	for _, signer := range s.config.signers {
 		sshConfig.AddHostKey(signer)
 	}
 
+	errgroup, ctx := errgroup.WithContext(ctx)
+
+	errgroup.Go(func() error {
+		return s.listenLocal(ctx, sshConfig)
+	})
+
+	if s.config.Tsnet.Enabled {
+		errgroup.Go(func() error {
+			return s.listenTsnet(ctx, sshConfig)
+		})
+	}
+
+	errgroup.Go(func() error {
+		return s.logStats(ctx)
+	})
+
+	return errgroup.Wait()
+}
+
+func (s *Server) logStats(ctx context.Context) error {
+	for {
+		select {
+		case <-time.After(time.Second * 30):
+			slog.Info("server status", "conns", s.conns.Load(), "goroutines", runtime.NumGoroutine())
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (s *Server) listenLocal(ctx context.Context, sshConfig *ssh.ServerConfig) error {
 	listener, err := net.Listen("tcp", s.listenAddr)
 	if err != nil {
 		return err
@@ -146,17 +167,25 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	slog.Info("listening", "addr", s.listenAddr)
 
-	go func() {
-		for {
-			select {
-			case <-time.After(time.Second * 30):
-				slog.Info("server status", "conns", s.conns.Load(), "goroutines", runtime.NumGoroutine())
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	return s.startListener(ctx, listener, sshConfig)
+}
 
+func (s *Server) listenTsnet(ctx context.Context, sshConfig *ssh.ServerConfig) error {
+	tsnet := new(tsnet.Server)
+	tsnet.Hostname = s.config.Tsnet.Hostname
+	defer tsnet.Close()
+
+	listener, err := tsnet.Listen("tcp", fmt.Sprintf(":%d", s.config.Tsnet.Port))
+	if err != nil {
+		return err
+	}
+
+	slog.Info("listening on tailscale network", "addr", fmt.Sprintf("%s:%d", tsnet.Hostname, s.config.Tsnet.Port))
+
+	return s.startListener(ctx, listener, sshConfig)
+}
+
+func (s *Server) startListener(ctx context.Context, listener net.Listener, sshConfig *ssh.ServerConfig) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -166,7 +195,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 		tcpConn, err := listener.Accept()
 		if err != nil {
-			slog.Error("error accepting connection",
+			slog.Error(
+				"error accepting connection",
 				slog.String("addr", tcpConn.RemoteAddr().String()),
 			)
 			continue
@@ -215,7 +245,8 @@ func (s *Server) handleConnection(ctx context.Context, c net.Conn, config *ssh.S
 	defer sshConn.Close()
 
 	logger := slog.With(
-		slog.Group("conn",
+		slog.Group(
+			"conn",
 			slog.String("addr", sshConn.RemoteAddr().String()),
 		),
 	)

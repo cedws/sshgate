@@ -3,9 +3,15 @@ package sshgate
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"golang.org/x/crypto/ssh"
+)
+
+const (
+	defaultTsnetHostname = "sshgate"
+	defaultTsnetPort     = 36867
 )
 
 type Identity struct {
@@ -24,8 +30,15 @@ type HostKeyPaths struct {
 	RSA     string `json:"rsa,omitempty"`
 }
 
+type Tsnet struct {
+	Enabled  bool   `json:"enabled"`
+	Hostname string `json:"hostname"`
+	Port     int    `json:"port"`
+}
+
 type Config struct {
 	Identities   []Identity   `json:"identities,omitempty"`
+	Tsnet        Tsnet        `json:"tsnet"`
 	HostKeyPaths HostKeyPaths `json:"host_key_paths"`
 
 	signers          []ssh.Signer
@@ -59,11 +72,15 @@ func ReadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var config Config
+	config := Config{
+		Tsnet: Tsnet{
+			Hostname: defaultTsnetHostname,
+			Port:     defaultTsnetPort,
+		},
+	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
-
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -71,6 +88,17 @@ func ReadConfig(path string) (*Config, error) {
 	config.signers, err = parseHostKeys(config.HostKeyPaths)
 	if err != nil {
 		return nil, fmt.Errorf("invalid host keys: %w", err)
+	}
+
+	if len(config.signers) == 0 {
+		slog.Warn("no host keys provided in config, generating ephemeral ed25519 host key")
+
+		signer, err := generateSigner()
+		if err != nil {
+			return nil, err
+		}
+
+		config.signers = append(config.signers, signer)
 	}
 
 	config.identityRulesets = parseIdentities(config.Identities)

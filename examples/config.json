@@ -1,4 +1,9 @@
 {
+  "tsnet": {
+    "enabled": true,
+    "hostname": "sshgate",
+    "port": 36867
+  },
   "identities": [
     {
       "authorized_keys": ["..."],
