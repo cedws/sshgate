@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 
 	"github.com/alecthomas/kong"
 	"github.com/cedws/sshgate/pkg/sshgate"
+	"github.com/fsnotify/fsnotify"
 )
 
 type cli struct {
@@ -21,10 +23,10 @@ type cli struct {
 
 type serveCmd struct{}
 
-func (s *serveCmd) Run(c *cli) error {
+func (s *serveCmd) Run(cli *cli) error {
 	var handler slog.Handler
 
-	switch c.LogFormat {
+	switch cli.LogFormat {
 	case "json":
 		handler = slog.NewJSONHandler(os.Stderr, nil)
 	case "text":
@@ -35,8 +37,32 @@ func (s *serveCmd) Run(c *cli) error {
 
 	slog.SetDefault(slog.New(handler))
 
-	var opts []sshgate.Option
+	for {
+		if err := serveUntilReload(context.Background(), cli); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
+	}
+}
 
+func serveUntilReload(ctx context.Context, cli *cli) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(cli.Config); err != nil {
+		return err
+	}
+
+	ctx, cancel := fsnotifyContext(ctx, watcher)
+	defer cancel()
+
+	return serve(ctx, cli)
+}
+
+func serve(ctx context.Context, c *cli) error {
+	var opts []sshgate.Option
 	if c.Ruleless {
 		opts = append(opts, sshgate.WithRulelessMode())
 	}
@@ -47,7 +73,29 @@ func (s *serveCmd) Run(c *cli) error {
 	}
 
 	server := sshgate.New(config, c.ListenAddr, opts...)
-	return server.ListenAndServe(context.Background())
+	return server.ListenAndServe(ctx)
+}
+
+func fsnotifyContext(ctx context.Context, watcher *fsnotify.Watcher) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+
+	go func() {
+		for {
+			select {
+			case evt := <-watcher.Events:
+				if evt.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
+					slog.Info("config file changed, reloading")
+					cancel()
+				}
+			case <-watcher.Errors:
+				cancel()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ctx, cancel
 }
 
 func Execute() {

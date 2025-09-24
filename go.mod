@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/alecthomas/kong v1.12.1
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/swaggest/jsonschema-go v0.3.78
 	golang.org/x/crypto v0.41.0
 	golang.org/x/sync v0.16.0

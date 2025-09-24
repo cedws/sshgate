@@ -188,7 +188,6 @@ func (s *Server) listenLocal(ctx context.Context, sshConfig *ssh.ServerConfig) e
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
 
 	slog.Info("listening", "addr", s.listenAddr)
 
@@ -211,23 +210,23 @@ func (s *Server) listenTsnet(ctx context.Context, sshConfig *ssh.ServerConfig) e
 }
 
 func (s *Server) startListener(ctx context.Context, listener net.Listener, sshConfig *ssh.ServerConfig) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+	}()
 
-		tcpConn, err := listener.Accept()
+	for {
+		conn, err := listener.Accept()
 		if err != nil {
-			slog.Error(
-				"error accepting connection",
-				slog.String("addr", tcpConn.RemoteAddr().String()),
-			)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			slog.Error("error accepting connection", "error", err.Error())
 			continue
 		}
 
-		go s.handleConnection(ctx, tcpConn, sshConfig)
+		go s.handleConnection(ctx, conn, sshConfig)
 	}
 }
 
