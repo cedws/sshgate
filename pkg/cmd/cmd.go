@@ -38,13 +38,18 @@ func (s *serveCmd) Run(cli *cli) error {
 	slog.SetDefault(slog.New(handler))
 
 	for {
-		if err := serveUntilReload(context.Background(), cli); err != nil && !errors.Is(err, context.Canceled) {
+		config, err := sshgate.ReadConfig(cli.Config)
+		if err != nil {
+			return err
+		}
+
+		if err := serveUntilReload(context.Background(), cli, config); err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 	}
 }
 
-func serveUntilReload(ctx context.Context, cli *cli) error {
+func serveUntilReload(ctx context.Context, cli *cli, config *sshgate.Config) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -55,24 +60,32 @@ func serveUntilReload(ctx context.Context, cli *cli) error {
 		return err
 	}
 
+	for _, hostKeyPath := range []string{
+		config.HostKeyPaths.ECDSA,
+		config.HostKeyPaths.ED25519,
+		config.HostKeyPaths.RSA,
+	} {
+		if hostKeyPath != "" {
+			if err := watcher.Add(hostKeyPath); err != nil {
+				return err
+			}
+		}
+	}
+
 	ctx, cancel := fsnotifyContext(ctx, watcher)
 	defer cancel()
 
-	return serve(ctx, cli)
+	return serve(ctx, cli, config)
 }
 
-func serve(ctx context.Context, c *cli) error {
+func serve(ctx context.Context, c *cli, config *sshgate.Config) error {
 	var opts []sshgate.Option
 	if c.Ruleless {
 		opts = append(opts, sshgate.WithRulelessMode())
 	}
 
-	config, err := sshgate.ReadConfig(c.Config)
-	if err != nil {
-		return err
-	}
-
 	server := sshgate.New(config, c.ListenAddr, opts...)
+
 	return server.ListenAndServe(ctx)
 }
 
