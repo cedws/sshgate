@@ -1,11 +1,15 @@
 {
   "tsnet": {
-    "enabled": true,
+    "enabled": false,
     "hostname": "sshgate",
     "port": 22
   },
-  "identities": [
+  "host_key_paths": {
+    "ed25519": "sshgate"
+  },
+  "policies": [
     {
+      "tailscale_principals": ["..."],
       "authorized_keys": ["..."],
       "rules": [
         {

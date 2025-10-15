@@ -9,14 +9,14 @@ import (
 
 const defaultAllowPort = 22
 
-type Ruleset []Rule
+type ruleset []rule
 
-type Rule struct {
+type rule struct {
 	Hosts []hostSpec
 	Ports []int
 }
 
-func (r Rule) Matches(host hostSpec, port int) bool {
+func (r rule) Matches(host hostSpec, port int) bool {
 	if len(r.Ports) == 0 {
 		if port != defaultAllowPort {
 			return false
@@ -32,7 +32,7 @@ func (r Rule) Matches(host hostSpec, port int) bool {
 	})
 }
 
-func (r Ruleset) Matches(host hostSpec, port int) bool {
+func (r ruleset) Matches(host hostSpec, port int) bool {
 	for _, rule := range r {
 		if rule.Matches(host, port) {
 			return true

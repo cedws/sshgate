@@ -19,10 +19,14 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
+	"tailscale.com/client/local"
 	"tailscale.com/tsnet"
 )
 
-const fingerprintKey = "fingerprint"
+const (
+	fingerprintKey   = "fingerprint"
+	tailscaleUserKey = "tailscale_user"
+)
 
 type rejectionError struct {
 	reason  ssh.RejectionReason
@@ -124,7 +128,8 @@ type Server struct {
 	listenAddr string
 	options    Options
 
-	conns atomic.Int32
+	tsnetClient *local.Client
+	conns       atomic.Int32
 }
 
 func New(config *Config, listenAddr string, opts ...Option) *Server {
@@ -199,6 +204,12 @@ func (s *Server) listenTsnet(ctx context.Context, sshConfig *ssh.ServerConfig) e
 	tsnet.Hostname = s.config.Tsnet.Hostname
 	defer tsnet.Close()
 
+	localClient, err := tsnet.LocalClient()
+	if err != nil {
+		return err
+	}
+	s.tsnetClient = localClient
+
 	listener, err := tsnet.Listen("tcp", fmt.Sprintf(":%d", s.config.Tsnet.Port))
 	if err != nil {
 		return err
@@ -233,6 +244,12 @@ func (s *Server) startListener(ctx context.Context, listener net.Listener, sshCo
 func (s *Server) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	fingerprint := ssh.FingerprintSHA256(key)
 
+	perms := &ssh.Permissions{
+		Extensions: map[string]string{
+			fingerprintKey: fingerprint,
+		},
+	}
+
 	logger := slog.With(
 		slog.Group(
 			"conn",
@@ -243,21 +260,34 @@ func (s *Server) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.
 
 	logger.Info("client tries auth")
 
-	if _, ok := s.config.identityRulesets[fingerprint]; !ok {
-		// No rulesets for this fingerprint, let client try another
-		logger.Info("no rulesets for this pubkey")
-		return nil, fmt.Errorf("connection rejected")
+	if s.tsnetClient != nil {
+		whois, err := s.tsnetClient.WhoIs(context.Background(), meta.RemoteAddr().String())
+		if err != nil {
+			if !errors.Is(err, local.ErrPeerNotFound) {
+				logger.Error("error looking up tailscale user", "error", err.Error())
+				return nil, err
+			}
+			// Peer not found, fallthrough to pubkey-only auth below
+		} else {
+			id := whois.UserProfile.LoginName
+			perms.Extensions[tailscaleUserKey] = id
+
+			logger = logger.With(slog.String("tailscale_user", id))
+
+			if _, found := s.config.parsedPolicies.MatchingPolicies("", id); found {
+				logger.Info("client authenticated via tailscale")
+				return perms, nil
+			}
+		}
 	}
 
-	logger.Info("found rulesets for pubkey")
-
-	perms := &ssh.Permissions{
-		Extensions: map[string]string{
-			fingerprintKey: fingerprint,
-		},
+	if _, found := s.config.parsedPolicies.MatchingPolicies(fingerprint, ""); found {
+		logger.Info("client authenticated via public key")
+		return perms, nil
 	}
 
-	return perms, nil
+	logger.Info("no policies for this client")
+	return perms, fmt.Errorf("connection rejected")
 }
 
 func (s *Server) handleConnection(ctx context.Context, c net.Conn, config *ssh.ServerConfig) {
@@ -341,23 +371,11 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, logger *slog.Logger, ssh
 		),
 	)
 
-	if sshConn.Permissions == nil {
-		return rejectionError{ssh.Prohibited, "connection rejected"}
+	allowed, err := s.connAllowed(logger, sshConn, destHost, destPort)
+	if err != nil {
+		return err
 	}
-	fingerprint, ok := sshConn.Permissions.Extensions[fingerprintKey]
-	if !ok {
-		panic("expected fingerprint extension on new channel")
-	}
-
-	allowed, err := s.connAllowed(logger, fingerprint, destHost, destPort)
-	if !allowed || err != nil {
-		if err != nil {
-			logger.Error(
-				"error checking if remote conn is allowed",
-				slog.String("error", err.Error()),
-			)
-		}
-
+	if !allowed {
 		return rejectionError{ssh.Prohibited, "remote connection denied"}
 	}
 
@@ -406,14 +424,9 @@ func (s *Server) forwardConns(sshConn, remoteConn io.ReadWriteCloser) {
 	wg.Wait()
 }
 
-func (s *Server) connAllowed(logger *slog.Logger, fingerprint, destHost string, destPort int) (bool, error) {
+func (s *Server) connAllowed(logger *slog.Logger, sshConn *ssh.ServerConn, destHost string, destPort int) (bool, error) {
 	if s.options.Ruleless {
 		return true, nil
-	}
-
-	rulesets, ok := s.config.identityRulesets[fingerprint]
-	if !ok {
-		panic("allowed previous connection but no rulesets")
 	}
 
 	destHostSpec, err := tryParseHostSpec(destHost)
@@ -421,14 +434,39 @@ func (s *Server) connAllowed(logger *slog.Logger, fingerprint, destHost string, 
 		return false, err
 	}
 
-	for _, ruleset := range rulesets {
-		if ruleset.Matches(destHostSpec, destPort) {
-			logger.Info("remote connection allowed due to matching ruleset")
-			return true, nil
+	checkPolicies := func(policies parsedPolicies) bool {
+		for _, policy := range policies {
+			if policy.Ruleset.Matches(destHostSpec, destPort) {
+				logger.Info("remote connection allowed due to matching ruleset")
+				return true
+			}
+		}
+
+		logger.Info("remote connection denied because no rulesets permitted it")
+		return false
+	}
+
+	if sshConn.Permissions == nil {
+		return false, rejectionError{ssh.Prohibited, "connection rejected"}
+	}
+	fingerprint, ok := sshConn.Permissions.Extensions[fingerprintKey]
+	if !ok {
+		panic("expected fingerprint extension on new channel")
+	}
+	tailscaleUser, ok := sshConn.Permissions.Extensions[tailscaleUserKey]
+	if ok {
+		policies, found := s.config.parsedPolicies.MatchingPolicies("", tailscaleUser)
+		if found {
+			if allowed := checkPolicies(policies); allowed {
+				return true, nil
+			}
+			// Otherwise lookup policies by fingerprint too
 		}
 	}
 
-	logger.Info("remote connection denied because no rulesets permitted it")
-
-	return false, nil
+	policies, found := s.config.parsedPolicies.MatchingPolicies(fingerprint, "")
+	if !found {
+		return false, nil
+	}
+	return checkPolicies(policies), nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -14,9 +15,10 @@ const (
 	defaultTsnetPort     = 22
 )
 
-type Identity struct {
-	AuthorizedKeys []string  `json:"authorized_keys,omitempty"`
-	Rules          []RawRule `json:"rules,omitempty"`
+type Policy struct {
+	AuthorizedKeys      []string  `json:"authorized_keys,omitempty"`
+	TailscalePrincipals []string  `json:"tailscale_principals,omitempty"`
+	Rules               []RawRule `json:"rules,omitempty"`
 }
 
 type RawRule struct {
@@ -37,33 +39,48 @@ type Tsnet struct {
 }
 
 type Config struct {
-	Identities   []Identity   `json:"identities,omitempty"`
+	Policies     []Policy     `json:"policies,omitempty"`
 	Tsnet        Tsnet        `json:"tsnet"`
 	HostKeyPaths HostKeyPaths `json:"host_key_paths"`
 
-	signers          []ssh.Signer
-	identityRulesets map[string][]*Ruleset
+	signers        []ssh.Signer
+	parsedPolicies parsedPolicies
 }
 
-func (c Config) Validate() error {
-	for _, identities := range c.Identities {
-		for _, key := range identities.AuthorizedKeys {
-			_, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key))
-			if err != nil {
-				return fmt.Errorf("failed to validate config: %w", err)
-			}
-		}
+type parsedPolicies []parsedPolicy
 
-		for _, rule := range identities.Rules {
-			for _, host := range rule.Hosts {
-				if _, err := tryParseHostSpec(host); err != nil {
-					return err
-				}
-			}
+func (p parsedPolicies) MatchingPolicies(fingerprint, tailscalePrincipal string) ([]parsedPolicy, bool) {
+	var matching []parsedPolicy
+	var found bool
+
+	for _, policy := range p {
+		matched := false
+		if fingerprint != "" && policy.AllowsFingerprint(fingerprint) {
+			matched = true
+		}
+		if tailscalePrincipal != "" && policy.AllowsTailscalePrincipal(tailscalePrincipal) {
+			matched = true
+		}
+		if matched {
+			matching = append(matching, policy)
 		}
 	}
 
-	return nil
+	return matching, found
+}
+
+type parsedPolicy struct {
+	Fingerprints        []string
+	TailscalePrincipals []string
+	Ruleset             ruleset
+}
+
+func (p parsedPolicy) AllowsFingerprint(fingerprint string) bool {
+	return slices.Contains(p.Fingerprints, fingerprint)
+}
+
+func (p parsedPolicy) AllowsTailscalePrincipal(principal string) bool {
+	return slices.Contains(p.TailscalePrincipals, principal)
 }
 
 func ReadConfig(path string) (*Config, error) {
@@ -81,7 +98,9 @@ func ReadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
-	if err := config.Validate(); err != nil {
+
+	config.parsedPolicies, err = parsePolicies(config.Policies)
+	if err != nil {
 		return nil, err
 	}
 
@@ -100,8 +119,6 @@ func ReadConfig(path string) (*Config, error) {
 
 		config.signers = append(config.signers, signer)
 	}
-
-	config.identityRulesets = parseIdentities(config.Identities)
 
 	return &config, nil
 }
@@ -139,29 +156,36 @@ func parseHostKeys(hostKeyPaths HostKeyPaths) ([]ssh.Signer, error) {
 	return signers, nil
 }
 
-func parseIdentities(identities []Identity) map[string][]*Ruleset {
-	rulesByFingerprints := make(map[string][]*Ruleset)
+func parsePolicies(policies []Policy) (parsedPolicies, error) {
+	var parsed parsedPolicies
 
-	for _, identities := range identities {
-		ruleset := parseRuleset(identities.Rules)
-
-		for _, rawPubkey := range identities.AuthorizedKeys {
-			authorizedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(rawPubkey))
-			if err != nil {
-				// already validated
-				panic(err)
-			}
-
-			fingerprint := ssh.FingerprintSHA256(authorizedKey)
-			rulesByFingerprints[fingerprint] = append(rulesByFingerprints[fingerprint], &ruleset)
+	for _, policy := range policies {
+		parsedPolicy := parsedPolicy{
+			TailscalePrincipals: policy.TailscalePrincipals,
 		}
+
+		for _, authorizedKey := range policy.AuthorizedKeys {
+			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorizedKey))
+			if err != nil {
+				return parsed, err
+			}
+			parsedPolicy.Fingerprints = append(parsedPolicy.Fingerprints, ssh.FingerprintSHA256(pubKey))
+		}
+
+		rule, err := parseRuleset(policy.Rules)
+		if err != nil {
+			return parsed, err
+		}
+		parsedPolicy.Ruleset = append(parsedPolicy.Ruleset, rule...)
+
+		parsed = append(parsed, parsedPolicy)
 	}
 
-	return rulesByFingerprints
+	return parsed, nil
 }
 
-func parseRuleset(rawRules []RawRule) Ruleset {
-	var ruleset Ruleset
+func parseRuleset(rawRules []RawRule) (ruleset, error) {
+	var ruleset ruleset
 
 	for _, rawRule := range rawRules {
 		var hostSpecs []hostSpec
@@ -169,17 +193,16 @@ func parseRuleset(rawRules []RawRule) Ruleset {
 		for _, host := range rawRule.Hosts {
 			hostSpec, err := tryParseHostSpec(host)
 			if err != nil {
-				// already validated
-				panic(err)
+				return ruleset, err
 			}
 			hostSpecs = append(hostSpecs, hostSpec)
 		}
 
-		ruleset = append(ruleset, Rule{
+		ruleset = append(ruleset, rule{
 			Hosts: hostSpecs,
 			Ports: rawRule.Ports,
 		})
 	}
 
-	return ruleset
+	return ruleset, nil
 }
