@@ -43,6 +43,7 @@ type Config struct {
 	Tsnet        Tsnet        `json:"tsnet"`
 	HostKeyPaths HostKeyPaths `json:"host_key_paths"`
 
+	path           string
 	signers        []ssh.Signer
 	parsedPolicies parsedPolicies
 }
@@ -92,6 +93,8 @@ func ReadConfig(path string) (*Config, error) {
 			Hostname: defaultTsnetHostname,
 			Port:     defaultTsnetPort,
 		},
+
+		path: path,
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)

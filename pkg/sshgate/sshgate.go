@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 	"tailscale.com/client/local"
@@ -112,7 +113,8 @@ func (d *directTCPIPExtraData) UnmarshalBinary(b []byte) error {
 }
 
 type Options struct {
-	Ruleless bool
+	Ruleless     bool
+	ConfigReload bool
 }
 
 type Option func(*Options)
@@ -120,6 +122,12 @@ type Option func(*Options)
 func WithRulelessMode() Option {
 	return func(o *Options) {
 		o.Ruleless = true
+	}
+}
+
+func WithConfigReload() Option {
+	return func(o *Options) {
+		o.ConfigReload = true
 	}
 }
 
@@ -158,6 +166,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		slog.Warn("running in ruleless mode")
 	}
 
+	if s.options.ConfigReload {
+		var err error
+		ctx, err = notifyConfigReload(ctx, s.config)
+		if err != nil {
+			return err
+		}
+	}
+
 	errgroup, ctx := errgroup.WithContext(ctx)
 
 	errgroup.Go(func() error {
@@ -175,6 +191,59 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	})
 
 	return errgroup.Wait()
+}
+
+func notifyConfigReload(ctx context.Context, config *Config) (context.Context, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		<-ctx.Done()
+		watcher.Close()
+	}()
+
+	if err := watcher.Add(config.path); err != nil {
+		return nil, err
+	}
+
+	for _, hostKeyPath := range []string{
+		config.HostKeyPaths.ECDSA,
+		config.HostKeyPaths.ED25519,
+		config.HostKeyPaths.RSA,
+	} {
+		if hostKeyPath != "" {
+			if err := watcher.Add(hostKeyPath); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return fsnotifyContext(ctx, watcher), nil
+}
+
+func fsnotifyContext(ctx context.Context, watcher *fsnotify.Watcher) context.Context {
+	ctx, cancel := context.WithCancel(ctx)
+
+	go func() {
+		for {
+			select {
+			case evt := <-watcher.Events:
+				if evt.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
+					slog.Info("config file changed, reloading")
+					cancel()
+					return
+				}
+			case <-watcher.Errors:
+				cancel()
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ctx
 }
 
 func (s *Server) logStats(ctx context.Context) error {

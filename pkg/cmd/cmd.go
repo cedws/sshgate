@@ -8,14 +8,14 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/cedws/sshgate/pkg/sshgate"
-	"github.com/fsnotify/fsnotify"
 )
 
 type cli struct {
-	ListenAddr string `help:"Address to listen on" default:":2222"`
-	Ruleless   bool   `help:"Run in ruleless mode"`
-	LogFormat  string `help:"Log format"`
-	Config     string `help:"Path to JSON config file"`
+	ListenAddr     string `help:"Address to listen on" default:":2222"`
+	Ruleless       bool   `help:"Run in ruleless mode"`
+	NoConfigReload bool   `help:"Disable config reload"`
+	LogFormat      string `help:"Log format"`
+	Config         string `help:"Path to JSON config file"`
 
 	Serve      serveCmd      `cmd:"" default:"1" help:"Start the server"`
 	JSONSchema jsonschemaCmd `cmd:"" name:"jsonschema" help:"Print config JSON schema"`
@@ -43,72 +43,25 @@ func (s *serveCmd) Run(cli *cli) error {
 			return err
 		}
 
-		if err := serveUntilReload(context.Background(), cli, config); err != nil && !errors.Is(err, context.Canceled) {
+		if err := serve(context.Background(), cli, config); err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 	}
 }
 
-func serveUntilReload(ctx context.Context, cli *cli, config *sshgate.Config) error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-	defer watcher.Close()
-
-	if err := watcher.Add(cli.Config); err != nil {
-		return err
-	}
-
-	for _, hostKeyPath := range []string{
-		config.HostKeyPaths.ECDSA,
-		config.HostKeyPaths.ED25519,
-		config.HostKeyPaths.RSA,
-	} {
-		if hostKeyPath != "" {
-			if err := watcher.Add(hostKeyPath); err != nil {
-				return err
-			}
-		}
-	}
-
-	ctx, cancel := fsnotifyContext(ctx, watcher)
-	defer cancel()
-
-	return serve(ctx, cli, config)
-}
-
 func serve(ctx context.Context, c *cli, config *sshgate.Config) error {
 	var opts []sshgate.Option
+
 	if c.Ruleless {
 		opts = append(opts, sshgate.WithRulelessMode())
+	}
+	if !c.NoConfigReload {
+		opts = append(opts, sshgate.WithConfigReload())
 	}
 
 	server := sshgate.New(config, c.ListenAddr, opts...)
 
 	return server.ListenAndServe(ctx)
-}
-
-func fsnotifyContext(ctx context.Context, watcher *fsnotify.Watcher) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(ctx)
-
-	go func() {
-		for {
-			select {
-			case evt := <-watcher.Events:
-				if evt.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
-					slog.Info("config file changed, reloading")
-					cancel()
-				}
-			case <-watcher.Errors:
-				cancel()
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return ctx, cancel
 }
 
 func Execute() {
