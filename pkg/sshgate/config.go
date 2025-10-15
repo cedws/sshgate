@@ -54,14 +54,12 @@ func (p parsedPolicies) MatchingPolicies(fingerprint, tailscalePrincipal string)
 	var found bool
 
 	for _, policy := range p {
-		matched := false
 		if fingerprint != "" && policy.AllowsFingerprint(fingerprint) {
-			matched = true
+			found = true
+			matching = append(matching, policy)
 		}
 		if tailscalePrincipal != "" && policy.AllowsTailscalePrincipal(tailscalePrincipal) {
-			matched = true
-		}
-		if matched {
+			found = true
 			matching = append(matching, policy)
 		}
 	}
