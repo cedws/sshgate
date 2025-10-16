@@ -56,6 +56,12 @@ sshgate doesn't care about the username used for the jump hop. It doesn't care a
 
 The default policy is to block all connections. The `rules` array describes what hosts and ports to allow forwarding to. If you just want to use sshgate for a bastion without firewalling you can run it with `--ruleless`, which disables firewall rules.
 
+A host can be any of the following:
+
+* Hostname (e.g. `github.com`, wildcards not supported)
+* IP address (e.g. `1.1.1.1`)
+* CIDR range (e.g. `192.168.1.1/24`)
+
 If no ports are specified in a rule, port 22 is allowed by default.
 
 ### Identity
