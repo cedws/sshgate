@@ -233,10 +233,6 @@ func notifyConfigReload(ctx context.Context, config *Config) (context.Context, e
 	if err != nil {
 		return nil, err
 	}
-	go func() {
-		<-ctx.Done()
-		watcher.Close()
-	}()
 
 	if err := watcher.Add(config.path); err != nil {
 		return nil, err
@@ -254,7 +250,14 @@ func notifyConfigReload(ctx context.Context, config *Config) (context.Context, e
 		}
 	}
 
-	return fsnotifyContext(ctx, watcher), nil
+	ctx = fsnotifyContext(ctx, watcher)
+
+	go func() {
+		<-ctx.Done()
+		watcher.Close()
+	}()
+
+	return ctx, nil
 }
 
 func fsnotifyContext(ctx context.Context, watcher *fsnotify.Watcher) context.Context {
