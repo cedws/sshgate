@@ -5,8 +5,8 @@ import "sync"
 type principalType string
 
 const (
-	principalTypeFingerprint = "fingerprint"
-	principalTypeTailscale   = "tailscale"
+	principalTypeFingerprint   = "fingerprint"
+	principalTypeTailscaleNode = "tailscale_node"
 )
 
 func newPolicyEngine() *policyEngine {
@@ -29,7 +29,7 @@ func (p *policyEngine) AddPolicy(principalType principalType, principal string, 
 	switch principalType {
 	case principalTypeFingerprint:
 		p.fingerprints[principal] = append(p.fingerprints[principal], rules...)
-	case principalTypeTailscale:
+	case principalTypeTailscaleNode:
 		p.tailscaleNodes[principal] = append(p.tailscaleNodes[principal], rules...)
 	}
 }
@@ -41,7 +41,7 @@ func (p *policyEngine) RemovePolicy(principalType principalType, principal strin
 	switch principalType {
 	case principalTypeFingerprint:
 		delete(p.fingerprints, principal)
-	case principalTypeTailscale:
+	case principalTypeTailscaleNode:
 		delete(p.tailscaleNodes, principal)
 	}
 }
@@ -56,7 +56,7 @@ func (p *policyEngine) Principal(principalType principalType, principal string) 
 	switch principalType {
 	case principalTypeFingerprint:
 		rules, ok = p.fingerprints[principal]
-	case principalTypeTailscale:
+	case principalTypeTailscaleNode:
 		rules, ok = p.tailscaleNodes[principal]
 	}
 

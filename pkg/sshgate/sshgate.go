@@ -30,7 +30,7 @@ const tsnetCapability = "github.com/cedws/sshgate"
 
 const (
 	fingerprintKey     = "fingerprint"
-	tailscaleNodeIDKey = "tailscale_user"
+	tailscaleNodeIDKey = "tailscale_node_id"
 )
 
 type rejectionError struct {
@@ -410,7 +410,7 @@ func (s *Server) addCapMapPolicy(logger *slog.Logger, id string, whois *apitype.
 		rules = append(rules, capData)
 	}
 
-	s.policyEngine.AddPolicy(principalTypeTailscale, id, rules)
+	s.policyEngine.AddPolicy(principalTypeTailscaleNode, id, rules)
 
 	return nil
 }
@@ -434,6 +434,14 @@ func (s *Server) handleConnection(ctx context.Context, c net.Conn, config *ssh.S
 
 	s.conns.Add(1)
 	defer s.conns.Add(-1)
+
+	defer func() {
+		// Clean up policies from Tailscale capabilities associated with this client
+		nodeID, ok := sshConn.Permissions.Extensions[tailscaleNodeIDKey]
+		if ok {
+			s.policyEngine.RemovePolicy(principalTypeTailscaleNode, nodeID)
+		}
+	}()
 
 	go func() {
 		for req := range requests {
