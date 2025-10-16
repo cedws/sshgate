@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -16,14 +15,8 @@ const (
 )
 
 type Policy struct {
-	AuthorizedKeys      []string  `json:"authorized_keys,omitempty"`
-	TailscalePrincipals []string  `json:"tailscale_principals,omitempty"`
-	Rules               []RawRule `json:"rules,omitempty"`
-}
-
-type RawRule struct {
-	Hosts []string `json:"hosts,omitempty"`
-	Ports []int    `json:"ports,omitempty"`
+	AuthorizedKeys []string `json:"authorized_keys,omitempty"`
+	Rules          ruleset  `json:"rules,omitempty"`
 }
 
 type HostKeyPaths struct {
@@ -39,47 +32,12 @@ type Tsnet struct {
 }
 
 type Config struct {
+	path    string
+	signers []ssh.Signer
+
 	Policies     []Policy     `json:"policies,omitempty"`
 	Tsnet        Tsnet        `json:"tsnet"`
 	HostKeyPaths HostKeyPaths `json:"host_key_paths"`
-
-	path           string
-	signers        []ssh.Signer
-	parsedPolicies parsedPolicies
-}
-
-type parsedPolicies []parsedPolicy
-
-func (p parsedPolicies) MatchingPolicies(fingerprint, tailscalePrincipal string) ([]parsedPolicy, bool) {
-	var matching []parsedPolicy
-	var found bool
-
-	for _, policy := range p {
-		if fingerprint != "" && policy.AllowsFingerprint(fingerprint) {
-			found = true
-			matching = append(matching, policy)
-		}
-		if tailscalePrincipal != "" && policy.AllowsTailscalePrincipal(tailscalePrincipal) {
-			found = true
-			matching = append(matching, policy)
-		}
-	}
-
-	return matching, found
-}
-
-type parsedPolicy struct {
-	Fingerprints        []string
-	TailscalePrincipals []string
-	Ruleset             ruleset
-}
-
-func (p parsedPolicy) AllowsFingerprint(fingerprint string) bool {
-	return slices.Contains(p.Fingerprints, fingerprint)
-}
-
-func (p parsedPolicy) AllowsTailscalePrincipal(principal string) bool {
-	return slices.Contains(p.TailscalePrincipals, principal)
 }
 
 func ReadConfig(path string) (*Config, error) {
@@ -89,20 +47,15 @@ func ReadConfig(path string) (*Config, error) {
 	}
 
 	config := Config{
+		path: path,
+
 		Tsnet: Tsnet{
 			Hostname: defaultTsnetHostname,
 			Port:     defaultTsnetPort,
 		},
-
-		path: path,
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
-	}
-
-	config.parsedPolicies, err = parsePolicies(config.Policies)
-	if err != nil {
-		return nil, err
 	}
 
 	config.signers, err = parseHostKeys(config.HostKeyPaths)
@@ -155,55 +108,4 @@ func parseHostKeys(hostKeyPaths HostKeyPaths) ([]ssh.Signer, error) {
 	}
 
 	return signers, nil
-}
-
-func parsePolicies(policies []Policy) (parsedPolicies, error) {
-	var parsed parsedPolicies
-
-	for _, policy := range policies {
-		parsedPolicy := parsedPolicy{
-			TailscalePrincipals: policy.TailscalePrincipals,
-		}
-
-		for _, authorizedKey := range policy.AuthorizedKeys {
-			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorizedKey))
-			if err != nil {
-				return parsed, err
-			}
-			parsedPolicy.Fingerprints = append(parsedPolicy.Fingerprints, ssh.FingerprintSHA256(pubKey))
-		}
-
-		rule, err := parseRuleset(policy.Rules)
-		if err != nil {
-			return parsed, err
-		}
-		parsedPolicy.Ruleset = append(parsedPolicy.Ruleset, rule...)
-
-		parsed = append(parsed, parsedPolicy)
-	}
-
-	return parsed, nil
-}
-
-func parseRuleset(rawRules []RawRule) (ruleset, error) {
-	var ruleset ruleset
-
-	for _, rawRule := range rawRules {
-		var hostSpecs []hostSpec
-
-		for _, host := range rawRule.Hosts {
-			hostSpec, err := tryParseHostSpec(host)
-			if err != nil {
-				return ruleset, err
-			}
-			hostSpecs = append(hostSpecs, hostSpec)
-		}
-
-		ruleset = append(ruleset, rule{
-			Hosts: hostSpecs,
-			Ports: rawRule.Ports,
-		})
-	}
-
-	return ruleset, nil
 }

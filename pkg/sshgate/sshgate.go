@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,12 +22,15 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tsnet"
 )
 
+const tsnetCapability = "github.com/cedws/sshgate"
+
 const (
-	fingerprintKey   = "fingerprint"
-	tailscaleUserKey = "tailscale_user"
+	fingerprintKey     = "fingerprint"
+	tailscaleNodeIDKey = "tailscale_user"
 )
 
 type rejectionError struct {
@@ -136,27 +140,58 @@ type Server struct {
 	listenAddr string
 	options    Options
 
-	tsnetClient *local.Client
-	conns       atomic.Int32
+	policyEngine *policyEngine
+	tsnetClient  *local.Client
+	conns        atomic.Int32
 }
 
-func New(config *Config, listenAddr string, opts ...Option) *Server {
+func New(config *Config, listenAddr string, opts ...Option) (*Server, error) {
 	var options Options
 
 	for _, opt := range opts {
 		opt(&options)
 	}
 
+	policyEngine, err := makePolicyEngine(config.Policies)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
 		config:     config,
 		listenAddr: listenAddr,
 		options:    options,
+
+		policyEngine: policyEngine,
+	}, nil
+}
+
+func makePolicyEngine(policies []Policy) (*policyEngine, error) {
+	policyEngine := newPolicyEngine()
+
+	for _, policy := range policies {
+		for _, authorizedKey := range policy.AuthorizedKeys {
+			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorizedKey))
+			if err != nil {
+				return nil, err
+			}
+			policyEngine.AddPolicy(principalTypeFingerprint, ssh.FingerprintSHA256(pubKey), policy.Rules)
+		}
 	}
+
+	return policyEngine, nil
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	sshConfig := &ssh.ServerConfig{
-		PublicKeyCallback: s.pubkeyCallback,
+		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			perms, err := s.pubkeyCallback(meta, key)
+			if err != nil {
+				slog.Info("client auth failed", "addr", meta.RemoteAddr().String(), "error", err.Error())
+				return nil, err
+			}
+			return perms, nil
+		},
 	}
 	for _, signer := range s.config.signers {
 		sshConfig.AddHostKey(signer)
@@ -333,30 +368,51 @@ func (s *Server) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.
 		whois, err := s.tsnetClient.WhoIs(context.Background(), meta.RemoteAddr().String())
 		if err != nil {
 			if !errors.Is(err, local.ErrPeerNotFound) {
-				logger.Error("error looking up tailscale user", "error", err.Error())
-				return nil, err
+				return nil, fmt.Errorf("error looking up tailscale client: %w", err)
 			}
 			// Peer not found, fallthrough to pubkey-only auth below
 		} else {
-			id := whois.UserProfile.LoginName
-			perms.Extensions[tailscaleUserKey] = id
+			id := whois.Node.ID.String()
+			perms.Extensions[tailscaleNodeIDKey] = id
 
-			logger = logger.With(slog.String("tailscale_user", id))
-
-			if _, found := s.config.parsedPolicies.MatchingPolicies("", id); found {
-				logger.Info("client authenticated via tailscale")
-				return perms, nil
+			if err := s.addCapMapPolicy(logger, id, whois); err != nil {
+				return nil, fmt.Errorf("error adding tailscale policies: %w", err)
 			}
+
+			return perms, nil
 		}
 	}
 
-	if _, found := s.config.parsedPolicies.MatchingPolicies(fingerprint, ""); found {
+	if _, found := s.policyEngine.Principal(principalTypeFingerprint, fingerprint); found {
 		logger.Info("client authenticated via public key")
 		return perms, nil
 	}
 
-	logger.Info("no policies for this client")
-	return perms, fmt.Errorf("connection rejected")
+	return nil, fmt.Errorf("no policies for this client")
+}
+
+func (s *Server) addCapMapPolicy(logger *slog.Logger, id string, whois *apitype.WhoIsResponse) error {
+	caps, ok := whois.CapMap[tsnetCapability]
+	if !ok {
+		logger.Info("no tailscale capabilities found for client")
+		return nil
+	}
+
+	var rules ruleset
+
+	for _, cap := range caps {
+		var capData rule
+
+		if err := json.Unmarshal([]byte(cap), &capData); err != nil {
+			return fmt.Errorf("error parsing ruleset from tailscale capability: %w", err)
+		}
+
+		rules = append(rules, capData)
+	}
+
+	s.policyEngine.AddPolicy(principalTypeTailscale, id, rules)
+
+	return nil
 }
 
 func (s *Server) handleConnection(ctx context.Context, c net.Conn, config *ssh.ServerConfig) {
@@ -503,39 +559,19 @@ func (s *Server) connAllowed(logger *slog.Logger, sshConn *ssh.ServerConn, destH
 		return false, err
 	}
 
-	checkPolicies := func(policies parsedPolicies) bool {
-		for _, policy := range policies {
-			if policy.Ruleset.Matches(destHostSpec, destPort) {
-				logger.Info("remote connection allowed due to matching ruleset")
-				return true
-			}
-		}
-
-		logger.Info("remote connection denied because no rulesets permitted it")
-		return false
-	}
-
 	if sshConn.Permissions == nil {
 		return false, rejectionError{ssh.Prohibited, "connection rejected"}
 	}
-	fingerprint, ok := sshConn.Permissions.Extensions[fingerprintKey]
-	if !ok {
-		panic("expected fingerprint extension on new channel")
-	}
-	tailscaleUser, ok := sshConn.Permissions.Extensions[tailscaleUserKey]
-	if ok {
-		policies, found := s.config.parsedPolicies.MatchingPolicies("", tailscaleUser)
-		if found {
-			if allowed := checkPolicies(policies); allowed {
-				return true, nil
-			}
-			// Otherwise lookup policies by fingerprint too
-		}
+
+	fingerprint := sshConn.Permissions.Extensions[fingerprintKey]
+	nodeID := sshConn.Permissions.Extensions[tailscaleNodeIDKey]
+
+	allowed := s.policyEngine.Allowed(fingerprint, nodeID, destHostSpec, destPort)
+	if allowed {
+		logger.Info("remote connection allowed")
+	} else {
+		logger.Info("remote connection denied")
 	}
 
-	policies, found := s.config.parsedPolicies.MatchingPolicies(fingerprint, "")
-	if !found {
-		return false, nil
-	}
-	return checkPolicies(policies), nil
+	return allowed, nil
 }

@@ -9,7 +9,6 @@
   },
   "policies": [
     {
-      "tailscale_principals": ["..."],
       "authorized_keys": ["..."],
       "rules": [
         {

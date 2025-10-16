@@ -1,6 +1,7 @@
 package sshgate
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"slices"
@@ -11,9 +12,42 @@ const defaultAllowPort = 22
 
 type ruleset []rule
 
+func (r ruleset) Matches(host hostSpec, port int) bool {
+	for _, rule := range r {
+		if rule.Matches(host, port) {
+			return true
+		}
+	}
+
+	return false
+}
+
 type rule struct {
 	Hosts []hostSpec
 	Ports []int
+}
+
+func (r *rule) UnmarshalJSON(data []byte) error {
+	var rawRule struct {
+		Hosts []string `json:"hosts"`
+		Ports []int    `json:"ports"`
+	}
+	if err := json.Unmarshal(data, &rawRule); err != nil {
+		return err
+	}
+
+	var hostSpecs []hostSpec
+	for _, host := range rawRule.Hosts {
+		hostSpec, err := tryParseHostSpec(host)
+		if err != nil {
+			return err
+		}
+		hostSpecs = append(hostSpecs, hostSpec)
+	}
+
+	r.Hosts = hostSpecs
+	r.Ports = rawRule.Ports
+	return nil
 }
 
 func (r rule) Matches(host hostSpec, port int) bool {
@@ -30,16 +64,6 @@ func (r rule) Matches(host hostSpec, port int) bool {
 	return slices.ContainsFunc(r.Hosts, func(host2 hostSpec) bool {
 		return host.Matches(host2)
 	})
-}
-
-func (r ruleset) Matches(host hostSpec, port int) bool {
-	for _, rule := range r {
-		if rule.Matches(host, port) {
-			return true
-		}
-	}
-
-	return false
 }
 
 type hostSpec interface {

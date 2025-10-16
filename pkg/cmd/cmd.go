@@ -59,7 +59,10 @@ func serve(ctx context.Context, c *cli, config *sshgate.Config) error {
 		opts = append(opts, sshgate.WithConfigReload())
 	}
 
-	server := sshgate.New(config, c.ListenAddr, opts...)
+	server, err := sshgate.New(config, c.ListenAddr, opts...)
+	if err != nil {
+		return err
+	}
 
 	return server.ListenAndServe(ctx)
 }
