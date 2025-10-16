@@ -107,24 +107,24 @@ Use this tailnet policy file as a starting point. You'll need to attach the `ssh
 ```json
 {
   "tagOwners": {
-		"tag:sshgate": ["autogroup:admin"],
-	},
+    "tag:sshgate": ["autogroup:admin"]
+  },
 
   "grants": [
-		{
-			"src": ["*"],
-			"dst": ["tag:sshgate"],
-			"ip":  ["22"],
-			"app": {
-				"github.com/cedws/sshgate": [
-					{
-						"hosts": ["github.com"],
-						"ports": [22],
-					},
-				],
-			},
-		},
-	],
+    {
+      "src": ["*"],
+      "dst": ["tag:sshgate"],
+      "ip": ["22"],
+      "app": {
+        "github.com/cedws/sshgate": [
+          {
+            "hosts": ["github.com"],
+            "ports": [22]
+          }
+        ]
+      }
+    }
+  ]
 }
 ```
 
