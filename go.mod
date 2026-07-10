@@ -7,7 +7,7 @@ require (
 	github.com/alecthomas/kong v1.12.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/swaggest/jsonschema-go v0.3.78
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.20.0
 	tailscale.com v1.86.5
 )
