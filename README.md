@@ -29,10 +29,18 @@ docker pull ghcr.io/cedws/sshgate:latest
 
 sshgate is an SSH server that only handles `direct-tcpip` channels, meaning it will only opaquely forward traffic from a remote host if there's a rule for the connected identity allowing it. It doesn't grant a PTY.
 
-Copy the example `config.json` and add your own SSH public key to the `authorized_keys` array, then start it up:
+Configuration files may use JSON or JSONC/HuJSON syntax, including comments and trailing commas. Three example configurations are provided:
 
-```
-sshgate --config config.json
+* [`static-authorized-key.jsonc`](examples/config/static-authorized-key.jsonc) listens on the command-line address and authenticates clients with an SSH public key.
+* [`tailscale-service.jsonc`](examples/config/tailscale-service.jsonc) publishes sshgate as a Tailscale Service and is the recommended Tailscale configuration.
+* [`tailscale-node.jsonc`](examples/config/tailscale-node.jsonc) runs sshgate as an ordinary tsnet node.
+
+For a local setup, copy the static-key example, replace its `authorized_keys` entry with your public key, generate the configured host key, and start sshgate:
+
+```fish
+cp examples/config/static-authorized-key.jsonc config.jsonc
+ssh-keygen -t ed25519 -f sshgate-host-key
+sshgate --config config.jsonc
 ```
 
 You can now use it as a jump host to reach a remote host:
@@ -64,51 +72,57 @@ A host can be any of the following:
 
 If no ports are specified in a rule, port 22 is allowed by default.
 
-### Identity
+### Host identity
 
-Since we didn't pass any SSH host keys to sshgate earlier, it generated an ephemeral ED25519 host key on startup. For the server to have a persistent identity, generate an SSH keypair and set `host_key_paths` in the config file accordingly. You may set an ED25519, ECDSA, and RSA host key.
+The server host key identifies sshgate to connecting SSH clients. Generate a persistent key and configure it through `host_key_paths`; otherwise, sshgate generates an ephemeral ED25519 host key each time it starts. ED25519, ECDSA, and RSA host keys are supported.
 
-For example, to set the server's ED25519 identity:
+For example:
 
-```
-ssh-keygen -t ed25519 -f sshgate
+```fish
+ssh-keygen -t ed25519 -f sshgate-host-key
 ```
 
 Add to the config:
 
-```json
+```jsonc
 {
   "host_key_paths": {
-    "ed25519": "./sshgate"
-  }
+    "ed25519": "./sshgate-host-key",
+  },
 }
 ```
 
 ## Tailscale Integration
 
-sshgate can join your Tailscale network (tailnet) directly like an appliance. You can configure the tailnet hostname and port in the JSON config:
+Using Tailscale's [tsnet](https://tailscale.com/kb/1244/tsnet) library, sshgate can authenticate clients by their Tailscale identity. [App capabilities](https://tailscale.com/kb/1537/grants-app-capabilities) then provide forwarding rules directly from the tailnet access controls, eliminating the need to manage client public keys in the sshgate configuration.
 
-```json
-{
-  "tsnet": {
-    "enabled": true,
-    "hostname": "sshgate",
-    "port": 22
-  }
-}
+### Tailscale Service
+
+The recommended approach is the [`tailscale-service.jsonc`](examples/config/tailscale-service.jsonc) example, which publishes sshgate as [`svc:sshgate`](https://tailscale.com/docs/features/tailscale-services). Define the Service in the Tailscale admin console before starting sshgate, then approve its advertised host or configure a service auto-approver.
+
+The tsnet node hostname must be different from the Service name. The node is the host running sshgate, while the Service has its own MagicDNS name and TailVIP. Multiple approved nodes can advertise the same Service, allowing Tailscale to provide failover, traffic steering, and draining without changing the address used by clients.
+
+```fish
+set -x TS_AUTH_KEY tskey-auth-xxx
+sshgate --config examples/config/tailscale-service.jsonc
 ```
 
-To have sshgate join your tailnet, create a `Linux server` device in the Tailscale console and copy the auth key. Export the value as `TS_AUTH_KEY` as an environment variable and start sshgate.
+### Ordinary tsnet node
 
-```bash
-export TS_AUTH_KEY=tskey-auth-xxx sshgate --config config.json
+The [`tailscale-node.jsonc`](examples/config/tailscale-node.jsonc) example is the other approach. It gives sshgate its own Tailscale node identity and MagicDNS hostname and is simpler for a single persistent instance.
+
+Create a tagged auth key in the Tailscale console, set `TS_AUTH_KEY`, and start sshgate:
+
+```fish
+set -x TS_AUTH_KEY tskey-auth-xxx
+sshgate --config examples/config/tailscale-node.jsonc
 ```
 
-You should see sshgate join the tailnet with the configured hostname and be able to SSH to it using any authorized key.
+Preserve the tsnet state directory to retain the same node identity between restarts.
 
-Using Tailscale's [tsnet](https://tailscale.com/kb/1244/tsnet) library, sshgate can authenticate clients by their Tailscale identity, eliminating the need for public key management in the config, while [app capabilities](https://tailscale.com/kb/1537/grants-app-capabilities) enable SSH rules to be directly configured inside the tailnet access controls.
+### Tailnet grants
 
-Use this tailnet policy file as a starting point. You'll need to attach the `sshgate` tag to the `sshgate` machine on your network after applying the policy.
+Use this tailnet policy as a starting point for the Service example. For an ordinary tsnet node, change the grant destination from `svc:sshgate` to `tag:sshgate`.
 
 ```json
 {
@@ -119,7 +133,7 @@ Use this tailnet policy file as a starting point. You'll need to attach the `ssh
   "grants": [
     {
       "src": ["*"],
-      "dst": ["tag:sshgate"],
+      "dst": ["svc:sshgate"],
       "ip": ["22"],
       "app": {
         "github.com/cedws/sshgate": [
@@ -134,4 +148,4 @@ Use this tailnet policy file as a starting point. You'll need to attach the `ssh
 }
 ```
 
-Ensure that the JSON under `"github.com/cedws/sshgate"` isn't malformed or clients won't be able to connect.
+The `ip` field controls access to sshgate itself. The objects under `github.com/cedws/sshgate` control the destinations that an authenticated client may reach through sshgate. Clients cannot connect when no matching app capability supplies an allowed destination.
