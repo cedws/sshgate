@@ -19,14 +19,18 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/pires/go-proxyproto"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
 const tsnetCapability = "github.com/cedws/sshgate"
+
+const serviceProxyProtocolVersion = 2
 
 const (
 	fingerprintKey     = "fingerprint"
@@ -121,6 +125,14 @@ type Options struct {
 	ConfigReload bool
 }
 
+func (Options) validate(config *Config) error {
+	if config == nil {
+		return errors.New("config is required")
+	}
+
+	return config.Tsnet.validate()
+}
+
 type Option func(*Options)
 
 func WithRulelessMode() Option {
@@ -141,8 +153,13 @@ type Server struct {
 	options    Options
 
 	policyEngine *policyEngine
-	tsnetClient  *local.Client
+	tsnetClient  whoIsClient
 	conns        atomic.Int32
+}
+
+type whoIsClient interface {
+	WhoIs(ctx context.Context, remoteAddr string) (*apitype.WhoIsResponse, error)
+	WhoIsForService(ctx context.Context, remoteAddr string, serviceName tailcfg.ServiceName) (*apitype.WhoIsResponse, error)
 }
 
 func New(config *Config, listenAddr string, opts ...Option) (*Server, error) {
@@ -150,6 +167,9 @@ func New(config *Config, listenAddr string, opts ...Option) (*Server, error) {
 
 	for _, opt := range opts {
 		opt(&options)
+	}
+	if err := options.validate(config); err != nil {
+		return nil, fmt.Errorf("invalid options: %w", err)
 	}
 
 	policyEngine, err := makePolicyEngine(config.Policies)
@@ -307,24 +327,56 @@ func (s *Server) listenLocal(ctx context.Context, sshConfig *ssh.ServerConfig) e
 }
 
 func (s *Server) listenTsnet(ctx context.Context, sshConfig *ssh.ServerConfig) error {
-	tsnet := new(tsnet.Server)
-	tsnet.Hostname = s.config.Tsnet.Hostname
-	defer tsnet.Close()
+	tsnetServer := &tsnet.Server{
+		Hostname:      s.config.Tsnet.Hostname,
+		AdvertiseTags: s.config.Tsnet.AdvertiseTags,
+	}
+	defer tsnetServer.Close()
 
-	localClient, err := tsnet.LocalClient()
+	localClient, err := tsnetServer.LocalClient()
 	if err != nil {
 		return err
 	}
 	s.tsnetClient = localClient
 
-	listener, err := tsnet.Listen("tcp", fmt.Sprintf(":%d", s.config.Tsnet.Port))
-	if err != nil {
-		return err
+	var listener net.Listener
+	if s.config.Tsnet.ServiceName == "" {
+		listener, err = tsnetServer.Listen("tcp", fmt.Sprintf(":%d", s.config.Tsnet.Port))
+		if err != nil {
+			return err
+		}
+
+		slog.Info("listening on tailscale network", "addr", fmt.Sprintf("%s:%d", tsnetServer.Hostname, s.config.Tsnet.Port))
+	} else {
+		serviceListener, err := tsnetServer.ListenService(s.config.Tsnet.ServiceName, tsnet.ServiceModeTCP{
+			Port:                 uint16(s.config.Tsnet.Port),
+			PROXYProtocolVersion: serviceProxyProtocolVersion,
+		})
+		if err != nil {
+			return err
+		}
+
+		listener, err = newServiceProxyListener(serviceListener)
+		if err != nil {
+			return err
+		}
+
+		slog.Info("listening on tailscale service", "name", s.config.Tsnet.ServiceName, "addr", serviceListener.Addr().String())
 	}
 
-	slog.Info("listening on tailscale network", "addr", fmt.Sprintf("%s:%d", tsnet.Hostname, s.config.Tsnet.Port))
-
 	return s.startListener(ctx, listener, sshConfig)
+}
+
+func newServiceProxyListener(listener net.Listener) (net.Listener, error) {
+	proxyPolicy, err := proxyproto.TrustProxyHeaderFromRanges([]string{"127.0.0.0/8", "::1/128"})
+	if err != nil {
+		return nil, fmt.Errorf("creating proxy protocol policy: %w", err)
+	}
+
+	return &proxyproto.Listener{
+		Listener:   listener,
+		ConnPolicy: proxyPolicy,
+	}, nil
 }
 
 func (s *Server) startListener(ctx context.Context, listener net.Listener, sshConfig *ssh.ServerConfig) error {
@@ -368,7 +420,7 @@ func (s *Server) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.
 	logger.Info("client tries auth")
 
 	if s.tsnetClient != nil {
-		whois, err := s.tsnetClient.WhoIs(context.Background(), meta.RemoteAddr().String())
+		whois, err := s.whoIs(context.Background(), meta.RemoteAddr().String())
 		if err != nil {
 			if !errors.Is(err, local.ErrPeerNotFound) {
 				return nil, fmt.Errorf("error looking up tailscale client: %w", err)
@@ -392,6 +444,14 @@ func (s *Server) pubkeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.
 	}
 
 	return nil, fmt.Errorf("no policies for this client")
+}
+
+func (s *Server) whoIs(ctx context.Context, remoteAddr string) (*apitype.WhoIsResponse, error) {
+	if s.config.Tsnet.ServiceName != "" {
+		return s.tsnetClient.WhoIsForService(ctx, remoteAddr, tailcfg.ServiceName(s.config.Tsnet.ServiceName))
+	}
+
+	return s.tsnetClient.WhoIs(ctx, remoteAddr)
 }
 
 func (s *Server) addCapMapPolicy(logger *slog.Logger, id string, whois *apitype.WhoIsResponse) error {
@@ -470,8 +530,7 @@ func (s *Server) handleChannel(ctx context.Context, logger *slog.Logger, sshConn
 		}
 	}
 
-	var rejection rejectionError
-	if errors.As(err, &rejection) {
+	if rejection, ok := errors.AsType[rejectionError](err); ok {
 		logger.Info(
 			"connection rejected",
 			slog.String("reason", rejection.reason.String()),

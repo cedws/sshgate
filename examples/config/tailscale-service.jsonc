@@ -1,0 +1,19 @@
+{
+  // Run sshgate as a tagged Tailscale node and publish it as a service.
+  "tsnet": {
+    "enabled": true,
+    // The node hostname must be different from the service name.
+    "hostname": "sshgate-node-1",
+    "port": 22,
+    "advertise_tags": ["tag:sshgate"],
+    "service_name": "svc:sshgate",
+  },
+
+  // Access rules for Tailscale clients come from the
+  // github.com/cedws/sshgate app capability in the tailnet grants policy.
+
+  // Generate this key with: ssh-keygen -t ed25519 -f sshgate-host-key
+  "host_key_paths": {
+    "ed25519": "./sshgate-host-key",
+  },
+}

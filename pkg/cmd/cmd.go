@@ -58,7 +58,6 @@ func serve(ctx context.Context, c *cli, config *sshgate.Config) error {
 	if !c.NoConfigReload {
 		opts = append(opts, sshgate.WithConfigReload())
 	}
-
 	server, err := sshgate.New(config, c.ListenAddr, opts...)
 	if err != nil {
 		return err

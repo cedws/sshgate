@@ -2,10 +2,12 @@ package sshgate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 
+	"github.com/tailscale/hujson"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -26,9 +28,22 @@ type HostKeyPaths struct {
 }
 
 type Tsnet struct {
-	Enabled  bool   `json:"enabled"`
-	Hostname string `json:"hostname"`
-	Port     int    `json:"port"`
+	Enabled       bool     `json:"enabled"`
+	Hostname      string   `json:"hostname"`
+	Port          int      `json:"port"`
+	AdvertiseTags []string `json:"advertise_tags,omitempty"`
+	ServiceName   string   `json:"service_name,omitempty"`
+}
+
+func (t Tsnet) validate() error {
+	if t.ServiceName != "" && !t.Enabled {
+		return fmt.Errorf("tailscale service requires tsnet to be enabled")
+	}
+	if t.ServiceName != "" && (t.Port < 1 || t.Port > 65535) {
+		return fmt.Errorf("invalid tailscale service port %d", t.Port)
+	}
+
+	return nil
 }
 
 type Config struct {
@@ -41,9 +56,17 @@ type Config struct {
 }
 
 func ReadConfig(path string) (*Config, error) {
+	if path == "" {
+		return nil, errors.New("config file path is required")
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+	data, err = hujson.Standardize(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse config json: %w", err)
 	}
 
 	config := Config{
@@ -55,7 +78,7 @@ func ReadConfig(path string) (*Config, error) {
 		},
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
+		return nil, fmt.Errorf("failed to parse config json: %w", err)
 	}
 
 	config.signers, err = parseHostKeys(config.HostKeyPaths)

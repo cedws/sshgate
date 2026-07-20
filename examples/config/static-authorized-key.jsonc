@@ -1,0 +1,34 @@
+{
+  // This configuration listens only on the regular command-line address.
+  // Generate this key with: ssh-keygen -t ed25519 -f sshgate-host-key
+  "host_key_paths": {
+    "ed25519": "./sshgate-host-key",
+  },
+
+  // Replace this generated example key with a public key you control.
+  "policies": [
+    {
+      "authorized_keys": [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC92Qp5cauPfrh6z+fpvRL+5C/TdrMW4Kpm9zM5CnxnZ operator@example",
+      ],
+      "rules": [
+        {
+          // Omitting ports allows SSH on port 22.
+          "hosts": ["github.com", "gitlab.com", "codeberg.org"],
+        },
+        {
+          "hosts": ["git.internal.example", "bastion.internal.example"],
+          "ports": [22, 2222],
+        },
+        {
+          "hosts": ["10.20.0.0/16", "172.22.22.10"],
+          "ports": [22],
+        },
+        {
+          "hosts": ["2001:db8:1234::/48"],
+          "ports": [22],
+        },
+      ],
+    },
+  ],
+}
